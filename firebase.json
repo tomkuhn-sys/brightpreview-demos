@@ -1,0 +1,8 @@
+{
+  "hosting": {
+    "site": "brightpreview-demos",
+    "public": "public",
+    "ignore": ["firebase.json", "**/.*"],
+    "cleanUrls": true
+  }
+}

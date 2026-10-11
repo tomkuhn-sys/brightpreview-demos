@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Drop Zone Picker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+/* Layout: full-height map with a working panel (side on desktop, bottom sheet on phone) */
+:root{
+  --bg:#f6f7f4; --panel:#ffffff; --fg:#1d2420; --muted:#66706a; --line:#dde2dc;
+  --accent:#c2410c; --accent-ink:#ffffff; --in:#15803d; --out:#9aa39d; --warn:#b45309;
+  --zone:#c2410c;
+  --display:"Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --body:"IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --mono:"IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#121614; --panel:#1a1f1c; --fg:#e8ece9; --muted:#9aa49e; --line:#2c3430;
+    --accent:#f97316; --accent-ink:#1a0d04; --in:#4ade80; --out:#5d6761; --warn:#fbbf24; --zone:#fb923c; color-scheme:dark; }
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 var(--body);display:flex;flex-direction:column;
+  padding-top:env(safe-area-inset-top,0px)}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font:700 18px/1.1 var(--display);margin:0;letter-spacing:-.01em}
+header h1 span{color:var(--accent)}
+.tag{font:500 11px var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:2px 6px}
+#search{display:flex;gap:6px;margin-left:auto;flex:1 1 260px;max-width:420px}
+input,select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:7px 9px;min-width:0}
+input:focus-visible,select:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+#q{flex:1}
+button{font:600 13px var(--body);border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:7px 11px;cursor:pointer;white-space:nowrap}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.on{border-color:var(--accent);color:var(--accent)}
+main{flex:1;display:grid;grid-template-columns:1fr 380px;min-height:0}
+#map{min-height:0;height:100%}
+aside{border-left:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-height:0;min-width:0}
+.tools{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:10px}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.hint{color:var(--muted);font-size:13px;margin:0}
+.status{font:500 12px var(--mono);color:var(--muted);min-height:1.2em}
+.status.err{color:var(--warn)}
+details{border-top:1px dashed var(--line);padding-top:8px}
+summary{cursor:pointer;color:var(--muted);font-size:13px}
+details .row{margin-top:8px}
+#key{flex:1}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
+.stat{background:var(--panel);padding:10px 12px}
+.stat b{display:block;font:700 22px/1 var(--display);font-variant-numeric:tabular-nums}
+.stat small{font:500 10px var(--mono);text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+#list{overflow:auto;flex:1;padding:4px 0}
+.street{padding:10px 16px;border-bottom:1px solid var(--line)}
+.street h3{margin:0;font:600 14px var(--body);display:flex;justify-content:space-between;gap:8px}
+.street h3 .range{font:500 13px var(--mono);color:var(--accent);font-variant-numeric:tabular-nums;white-space:nowrap}
+.street p{margin:2px 0 0;font:400 12px var(--mono);color:var(--muted)}
+.street .nums{margin-top:6px;display:flex;flex-wrap:wrap;gap:4px}
+.num{font:500 11px var(--mono);border:1px solid var(--line);border-radius:4px;padding:1px 5px;cursor:pointer;background:var(--bg);color:var(--fg)}
+.num.x{text-decoration:line-through;color:var(--out)}
+.empty{padding:20px 16px;color:var(--muted)}
+.empty b{color:var(--fg)}
+.foot{padding:10px 16px;border-top:1px solid var(--line);display:flex;gap:6px;flex-wrap:wrap}
+.legend{display:flex;gap:12px;font-size:12px;color:var(--muted);flex-wrap:wrap}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:middle}
+.leaflet-container{font:inherit;background:var(--bg)}
+.leaflet-popup-content{font:13px/1.4 var(--body)}
+@media (max-width:820px){
+  main{grid-template-columns:1fr;grid-template-rows:minmax(300px,55vh) auto}
+  aside{border-left:0;border-top:1px solid var(--line)}
+  #list{max-height:none}
+  #search{max-width:none}
+}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Drop Zone <span>Picker</span></h1>
+  <span class="tag">BrightPreview demo</span>
+  <form id="search">
+    <input id="q" type="search" placeholder="Jump to a neighborhood or address" autocomplete="off">
+    <button type="submit">Go</button>
+  </form>
+</header>
+<main>
+  <div id="map" aria-label="Map"></div>
+  <aside>
+    <div class="tools">
+      <div class="row">
+        <button id="btnPoly" class="primary">Draw shape</button>
+        <button id="btnRect">Draw rectangle</button>
+        <button id="btnFinish" hidden>Finish shape</button>
+        <button id="btnClear">Clear</button>
+        <button id="btnSat">Satellite</button>
+      </div>
+      <p class="hint" id="hint">Zoom to a subdivision, then tap <b>Draw shape</b> and tap the map to outline the area. Houses inside the shape load automatically.</p>
+      <div class="status" id="status" role="status"></div>
+      <details>
+        <summary>Fill missing addresses with Geocodio</summary>
+        <p class="hint">Houses without a mapped address get looked up from their rooftop point. 2,500 free lookups a day. Your key stays in this browser.</p>
+        <div class="row">
+          <input id="key" type="password" placeholder="Geocodio API key" autocomplete="off">
+          <button id="btnGeo">Look up missing</button>
+        </div>
+      </details>
+      <div class="legend">
+        <span><i class="dot" style="background:var(--in)"></i>In drop</span>
+        <span><i class="dot" style="background:var(--warn)"></i>No address yet</span>
+        <span><i class="dot" style="background:var(--out)"></i>Removed</span>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat"><b id="sHouses">0</b><small>Houses</small></div>
+      <div class="stat"><b id="sStreets">0</b><small>Streets</small></div>
+      <div class="stat"><b id="sMissing">0</b><small>No address</small></div>
+    </div>
+    <div id="list"><div class="empty"><b>No area yet.</b> Draw a shape on the map and you'll get each street with its first and last house number inside the shape, odd and even sides, and a flyer count.</div></div>
+    <div class="foot">
+      <button id="btnCopy" disabled>Copy list</button>
+      <button id="btnCsv" disabled>Download CSV</button>
+    </div>
+  </aside>
+</main>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function(){
+"use strict";
+const $ = id => document.getElementById(id);
+if(typeof L==="undefined"){
+  $("map").innerHTML='<div class="empty"><b>The map couldn\'t load here.</b> This page needs to be opened from its web address in Safari or Chrome. Previews inside other apps block the map.</div>';
+  document.querySelectorAll("aside button").forEach(b=>b.disabled=true);
+  return;
+}
+const store = {
+  get(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } },
+  set(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
+};
+
+// ---------- map ----------
+const map = L.map("map",{zoomControl:true}).setView([39.5,-98.35],4);
+const street = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",{maxZoom:20,maxNativeZoom:19,attribution:"Map &copy; Esri, OpenStreetMap contributors"}).addTo(map);
+const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{maxZoom:20,maxNativeZoom:19,attribution:"Imagery &copy; Esri"});
+let satOn=false;
+$("btnSat").onclick=()=>{ satOn=!satOn; if(satOn){map.removeLayer(street);sat.addTo(map);}else{map.removeLayer(sat);street.addTo(map);} $("btnSat").classList.toggle("on",satOn); };
+const last = store.get("dz-view");
+if(last){ try{ const v=JSON.parse(last); map.setView([v.lat,v.lng],v.z); }catch(e){} }
+map.on("moveend",()=>{ const c=map.getCenter(); store.set("dz-view",JSON.stringify({lat:c.lat,lng:c.lng,z:map.getZoom()})); });
+
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const houseLayer = L.layerGroup().addTo(map);
+let zone=null, sketch=null, verts=[], mode=null, rectStart=null;
+let houses=[];
+
+function setStatus(t,err){ const s=$("status"); s.textContent=t||""; s.classList.toggle("err",!!err); }
+
+// ---------- search ----------
+$("search").addEventListener("submit",async e=>{
+  e.preventDefault();
+  const q=$("q").value.trim(); if(!q) return;
+  setStatus("Searching…");
+  try{
+    const r=await fetch("https://photon.komoot.io/api/?limit=1&lang=en&q="+encodeURIComponent(q));
+    const j=await r.json();
+    const f=j.features&&j.features[0];
+    if(!f){ setStatus("Couldn't find that place. Try adding the city and state.",true); return; }
+    const e2=f.properties.extent;
+    if(e2) map.fitBounds([[e2[1],e2[0]],[e2[3],e2[2]]],{maxZoom:18});
+    else map.setView([f.geometry.coordinates[1],f.geometry.coordinates[0]],18);
+    setStatus("");
+  }catch(err){ setStatus("Search failed. Check your connection and try again.",true); }
+});
+
+// ---------- drawing ----------
+function startMode(m){
+  clearZone(); mode=m; verts=[]; rectStart=null;
+  $("btnPoly").classList.toggle("on",m==="poly"); $("btnRect").classList.toggle("on",m==="rect");
+  $("btnFinish").hidden = m!=="poly";
+  $("btnFinish").disabled=true;
+  map.getContainer().style.cursor="crosshair";
+  $("hint").textContent = m==="poly"
+    ? "Tap the map at each corner of the area. Tap Finish shape when you've placed at least 3 points."
+    : "Tap one corner of the area, then the opposite corner.";
+}
+function endMode(){ mode=null; map.getContainer().style.cursor=""; $("btnFinish").hidden=true; $("btnPoly").classList.remove("on"); $("btnRect").classList.remove("on"); }
+$("btnPoly").onclick=()=>startMode("poly");
+$("btnRect").onclick=()=>startMode("rect");
+$("btnFinish").onclick=()=>{ if(verts.length>=3) finishZone(verts.slice()); };
+$("btnClear").onclick=()=>{ endMode(); clearZone(); $("hint").textContent="Tap Draw shape to outline a new area."; };
+
+map.on("click",e=>{
+  if(!mode) return;
+  if(mode==="poly"){
+    verts.push([e.latlng.lat,e.latlng.lng]);
+    if(sketch) map.removeLayer(sketch);
+    sketch = verts.length>=3
+      ? L.polygon(verts,{color:css("--zone"),weight:2,dashArray:"5 5",fillOpacity:.08}).addTo(map)
+      : L.polyline(verts,{color:css("--zone"),weight:2,dashArray:"5 5"}).addTo(map);
+    $("btnFinish").disabled = verts.length<3;
+  } else {
+    if(!rectStart){ rectStart=e.latlng; sketch=L.circleMarker(e.latlng,{radius:5,color:css("--zone")}).addTo(map); }
+    else{
+      const a=rectStart,b=e.latlng;
+      finishZone([[a.lat,a.lng],[a.lat,b.lng],[b.lat,b.lng],[b.lat,a.lng]]);
+    }
+  }
+});
+
+function clearZone(){
+  if(sketch){ map.removeLayer(sketch); sketch=null; }
+  if(zone){ map.removeLayer(zone); zone=null; }
+  houseLayer.clearLayers(); houses=[]; render();
+}
+
+function finishZone(pts){
+  endMode();
+  if(sketch){ map.removeLayer(sketch); sketch=null; }
+  zone=L.polygon(pts,{color:css("--zone"),weight:2.5,fillOpacity:.07}).addTo(map);
+  map.fitBounds(zone.getBounds(),{padding:[30,30]});
+  const areaKm = approxAreaKm2(pts);
+  if(areaKm>6){ setStatus(`That area is about ${areaKm.toFixed(1)} km². Draw something smaller (a subdivision or a few blocks) for the demo.`,true); return; }
+  $("hint").textContent="Tap any dot (or a house number in the list) to remove or restore that house.";
+  loadHouses(pts);
+}
+
+function approxAreaKm2(pts){
+  const R=6371, lat0=pts[0][0]*Math.PI/180;
+  let a=0; for(let i=0;i<pts.length;i++){ const p=pts[i],q=pts[(i+1)%pts.length];
+    const x1=p[1]*Math.PI/180*R*Math.cos(lat0), y1=p[0]*Math.PI/180*R, x2=q[1]*Math.PI/180*R*Math.cos(lat0), y2=q[0]*Math.PI/180*R;
+    a+=x1*y2-x2*y1; }
+  return Math.abs(a/2);
+}
+function inside(pt,poly){ // ray casting, pt=[lat,lng]
+  let c=false; for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+    const yi=poly[i][0],xi=poly[i][1],yj=poly[j][0],xj=poly[j][1];
+    if(((yi>pt[0])!==(yj>pt[0])) && (pt[1] < (xj-xi)*(pt[0]-yi)/(yj-yi)+xi)) c=!c; }
+  return c;
+}
+function meters(a,b){ const dx=(a[1]-b[1])*111320*Math.cos(a[0]*Math.PI/180), dy=(a[0]-b[0])*110540; return Math.hypot(dx,dy); }
+
+// ---------- data ----------
+const SKIP = new Set(["garage","garages","shed","carport","roof","greenhouse","hut","kiosk","commercial","retail","industrial","warehouse","school","church","office","service","transformer_tower","parking","hospital","public","civic","barn","stable","construction","ruins","toilets","boathouse"]);
+
+async function loadHouses(pts){
+  setStatus("Finding buildings and addresses inside the shape…");
+  const poly = pts.map(p=>p[0].toFixed(6)+" "+p[1].toFixed(6)).join(" ");
+  const q = `[out:json][timeout:60];(way["building"](poly:"${poly}");node["addr:housenumber"](poly:"${poly}"););out center tags;`;
+  let data; const errs=[];
+  const servers=["https://overpass-api.de/api/interpreter","https://overpass.private.coffee/api/interpreter","https://overpass.kumi.systems/api/interpreter","https://maps.mail.ru/osm/tools/overpass/api/interpreter"];
+  for(const url of servers){
+    const host=new URL(url).host;
+    setStatus(`Finding buildings and addresses inside the shape (${host})…`);
+    try{
+      const ctl=new AbortController(); const t=setTimeout(()=>ctl.abort(),25000);
+      const r = await fetch(url+"?data="+encodeURIComponent(q),{signal:ctl.signal});
+      clearTimeout(t);
+      if(!r.ok){ errs.push(host+": HTTP "+r.status); continue; }
+      data = await r.json(); break;
+    }catch(err){ errs.push(host+": "+(err.name==="AbortError"?"timed out":"blocked or offline")); }
+  }
+  if(!data){ setStatus("The building lookup didn't respond. "+errs.join(" · "),true); return; }
+
+  const bldgs=[], addrs=[];
+  for(const el of data.elements){
+    const t=el.tags||{};
+    if(el.type==="way"){
+      if(SKIP.has(t.building)) continue;
+      const c=[el.center.lat,el.center.lon];
+      if(!inside(c,pts)) continue;
+      bldgs.push({pt:c,num:t["addr:housenumber"]||null,street:t["addr:street"]||null,src:t["addr:housenumber"]?"map":null});
+    } else if(el.type==="node" && t["addr:street"]){
+      const c=[el.lat,el.lon];
+      if(inside(c,pts)) addrs.push({pt:c,num:t["addr:housenumber"],street:t["addr:street"]});
+    }
+  }
+  // attach loose address points to the nearest unaddressed building within 30 m; otherwise keep them as their own house
+  for(const a of addrs){
+    let best=null,bd=30;
+    for(const b of bldgs){ if(b.num) continue; const d=meters(a.pt,b.pt); if(d<bd){bd=d;best=b;} }
+    if(best){ best.num=a.num; best.street=a.street; best.src="map"; }
+    else if(!bldgs.some(b=>b.num===a.num && b.street===a.street)) bldgs.push({pt:a.pt,num:a.num,street:a.street,src:"map"});
+  }
+  houses = bldgs.map((b,i)=>({id:i,...b,on:true}));
+  drawHouses(); render();
+  const miss=houses.filter(h=>!h.num).length;
+  setStatus(`Found ${houses.length} buildings.` + (miss? ` ${miss} have no mapped address yet; use Geocodio below to fill them in.`:""));
+  if(miss && $("key").value.trim()) geocodeMissing();
+}
+
+function drawHouses(){
+  houseLayer.clearLayers();
+  for(const h of houses){
+    const color = !h.on ? css("--out") : (h.num ? css("--in") : css("--warn"));
+    const m=L.circleMarker(h.pt,{radius:6,color:css("--panel"),weight:1.5,fillColor:color,fillOpacity:.95});
+    m.bindTooltip(h.num? `${h.num} ${h.street}`:"Address not found yet",{direction:"top"});
+    m.on("click",()=>{ h.on=!h.on; drawHouses(); render(); });
+    m.addTo(houseLayer);
+  }
+}
+
+// ---------- geocodio ----------
+$("key").value = store.get("dz-geocodio")||"";
+$("btnGeo").onclick=geocodeMissing;
+async function geocodeMissing(){
+  const key=$("key").value.trim();
+  if(!key){ setStatus("Paste a Geocodio API key first.",true); return; }
+  store.set("dz-geocodio",key);
+  const todo=houses.filter(h=>!h.num);
+  if(!todo.length){ setStatus("Every house already has an address."); return; }
+  setStatus(`Looking up ${todo.length} rooftops…`);
+  try{
+    const r=await fetch("https://api.geocod.io/v2/reverse?api_key="+encodeURIComponent(key),{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(todo.map(h=>h.pt[0].toFixed(6)+","+h.pt[1].toFixed(6)))});
+    if(!r.ok){ setStatus(r.status===403||r.status===401?"Geocodio rejected that key. Check it in your Geocodio dashboard.":`Geocodio returned an error (${r.status}).`,true); return; }
+    const j=await r.json();
+    let filled=0, rough=0;
+    j.results.forEach((res,i)=>{
+      const top=res.response && res.response.results && res.response.results[0];
+      if(!top) return;
+      const ac=top.address_components||{};
+      if(!ac.number) return;
+      const h=todo[i];
+      h.num=ac.number; h.street=ac.formatted_street||[ac.predirectional,ac.street,ac.suffix,ac.postdirectional].filter(Boolean).join(" ");
+      h.src = top.accuracy_type==="rooftop"||top.accuracy_type==="point" ? "geocodio" : "estimate";
+      if(h.src==="estimate") rough++;
+      filled++;
+    });
+    dedupe(); drawHouses(); render();
+    setStatus(`Filled ${filled} of ${todo.length}.` + (rough? ` ${rough} are estimated from the street's number range; double-check those on Street View.`:""));
+  }catch(err){ setStatus("Couldn't reach Geocodio from this page. Open the file in a regular browser tab and try again.",true); }
+}
+function dedupe(){ // two buildings resolving to one address: keep the first, drop the rest (usually a garage or shed)
+  const seen=new Set();
+  houses=houses.filter(h=>{ if(!h.num) return true; const k=h.num+"|"+h.street.toLowerCase(); if(seen.has(k)) return false; seen.add(k); return true; });
+}
+
+// ---------- list ----------
+function groups(){
+  const by={};
+  for(const h of houses){ if(!h.num) continue; (by[h.street]=by[h.street]||[]).push(h); }
+  return Object.entries(by).map(([st,hs])=>{
+    hs.sort((a,b)=>parseInt(a.num)-parseInt(b.num)||String(a.num).localeCompare(b.num));
+    const act=hs.filter(h=>h.on), n=act.map(h=>parseInt(h.num)).filter(x=>!isNaN(x));
+    return {street:st,all:hs,act,lo:n.length?Math.min(...n):null,hi:n.length?Math.max(...n):null,
+      odd:n.filter(x=>x%2).length,even:n.filter(x=>x%2===0).length};
+  }).sort((a,b)=>a.street.localeCompare(b.street));
+}
+function esc(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function render(){
+  const g=groups(), on=houses.filter(h=>h.on);
+  $("sHouses").textContent=on.filter(h=>h.num).length;
+  $("sStreets").textContent=g.filter(x=>x.act.length).length;
+  $("sMissing").textContent=on.filter(h=>!h.num).length;
+  const has = g.some(x=>x.act.length);
+  $("btnCopy").disabled=$("btnCsv").disabled=!has;
+  if(!houses.length){ $("list").innerHTML=`<div class="empty"><b>No area yet.</b> Draw a shape on the map and you'll get each street with its first and last house number inside the shape, odd and even sides, and a flyer count.</div>`; return; }
+  if(!g.length){ $("list").innerHTML=`<div class="empty"><b>No addresses mapped here yet.</b> Open “Fill missing addresses with Geocodio” above to look them up from the rooftops.</div>`; return; }
+  $("list").innerHTML=g.map(x=>`
+    <div class="street">
+      <h3><span>${esc(x.street)}</span><span class="range">${x.lo===null?"none":x.lo===x.hi?x.lo:x.lo+"–"+x.hi}</span></h3>
+      <p>${x.act.length} house${x.act.length===1?"":"s"} · ${x.odd} odd side · ${x.even} even side</p>
+      <div class="nums">${x.all.map(h=>`<button class="num${h.on?"":" x"}" data-id="${h.id}" title="${h.on?"Remove":"Restore"} ${esc(h.num)} ${esc(h.street)}">${esc(h.num)}</button>`).join("")}</div>
+    </div>`).join("");
+}
+$("list").addEventListener("click",e=>{
+  const b=e.target.closest(".num"); if(!b) return;
+  const h=houses.find(x=>x.id===+b.dataset.id); if(!h) return;
+  h.on=!h.on; drawHouses(); render();
+});
+
+// ---------- export ----------
+function rows(){
+  const out=[["street","house_number","side","lat","lng","source"]];
+  for(const x of groups()) for(const h of x.act){ const n=parseInt(h.num);
+    out.push([x.street,h.num,isNaN(n)?"":(n%2?"odd":"even"),h.pt[0].toFixed(6),h.pt[1].toFixed(6),h.src||""]); }
+  return out;
+}
+const toCsv = r => r.map(c=>c.map(v=>/[",\n]/.test(v)?'"'+String(v).replace(/"/g,'""')+'"':v).join(",")).join("\n");
+$("btnCopy").onclick=async()=>{
+  const txt=groups().filter(x=>x.act.length).map(x=>`${x.street}: ${x.lo===x.hi?x.lo:x.lo+"–"+x.hi} (${x.act.length} houses)`).join("\n");
+  try{ await navigator.clipboard.writeText(txt); setStatus("Street list copied."); }
+  catch(e){ setStatus("Couldn't copy automatically. Use Download CSV instead.",true); }
+};
+$("btnCsv").onclick=()=>{
+  const blob=new Blob([toCsv(rows())],{type:"text/csv"});
+  const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="drop-zone-houses.csv";
+  document.body.appendChild(a); a.click(); a.remove(); setStatus("CSV downloaded.");
+};
+})();
+</script>
+</body>
+</html>
