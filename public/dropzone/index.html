@@ -243,53 +243,90 @@ function inside(pt,poly){ // ray casting, pt=[lat,lng]
 }
 function meters(a,b){ const dx=(a[1]-b[1])*111320*Math.cos(a[0]*Math.PI/180), dy=(a[0]-b[0])*110540; return Math.hypot(dx,dy); }
 
-// ---------- data ----------
-const SKIP = new Set(["garage","garages","shed","carport","roof","greenhouse","hut","kiosk","commercial","retail","industrial","warehouse","school","church","office","service","transformer_tower","parking","hospital","public","civic","barn","stable","construction","ruins","toilets","boathouse"]);
+// ---------- data (Overture Maps: buildings + addresses, read straight from its public tile files) ----------
+const OVERTURE = "https://overturemaps-extras-us-west-2.s3.us-west-2.amazonaws.com/tiles/2026-09-23.1/";
+let libs=null;
+async function loadLibs(){
+  if(libs) return libs;
+  const [pm,vt,pbf]=await Promise.all([
+    import("https://cdn.jsdelivr.net/npm/pmtiles@3.2.1/+esm"),
+    import("https://cdn.jsdelivr.net/npm/@mapbox/vector-tile@2.0.3/+esm"),
+    import("https://cdn.jsdelivr.net/npm/pbf@4.0.1/+esm")]);
+  libs={VectorTile:vt.VectorTile,Pbf:pbf.default,
+    bld:new pm.PMTiles(OVERTURE+"buildings.pmtiles"),
+    adr:new pm.PMTiles(OVERTURE+"addresses.pmtiles")};
+  return libs;
+}
+const Z=14;
+const tx=lng=>Math.floor((lng+180)/360*2**Z);
+const ty=lat=>{const r=lat*Math.PI/180;return Math.floor((1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*2**Z);};
+function ringAreaM2(ring){ // ring of [lng,lat]
+  const lat0=ring[0][1]*Math.PI/180; let a=0;
+  for(let i=0;i<ring.length-1;i++){const p=ring[i],q=ring[i+1];
+    a+=(p[0]*111320*Math.cos(lat0))*(q[1]*110540)-(q[0]*111320*Math.cos(lat0))*(p[1]*110540);}
+  return Math.abs(a/2);
+}
+function ringCenter(ring){ let x=0,y=0,n=ring.length-1||1; for(let i=0;i<n;i++){x+=ring[i][0];y+=ring[i][1];} return [y/n,x/n]; }
+const titleCase = s => String(s||"").toLowerCase().replace(/\b([a-z])/g,c=>c.toUpperCase()).replace(/\b(Ne|Nw|Se|Sw)\b/g,m=>m.toUpperCase());
+
+async function readLayer(pmt,layer,x,y){
+  const r=await pmt.getZxy(Z,x,y);
+  if(!r||!r.data) return [];
+  const t=new libs.VectorTile(new libs.Pbf(new Uint8Array(r.data)));
+  const l=t.layers[layer]; if(!l) return [];
+  const out=[]; for(let i=0;i<l.length;i++) out.push(l.feature(i).toGeoJSON(x,y,Z));
+  return out;
+}
 
 async function loadHouses(pts){
-  setStatus("Finding buildings and addresses inside the shape…");
-  const poly = pts.map(p=>p[0].toFixed(6)+" "+p[1].toFixed(6)).join(" ");
-  const q = `[out:json][timeout:60];(way["building"](poly:"${poly}");node["addr:housenumber"](poly:"${poly}"););out center tags;`;
-  let data; const errs=[];
-  const servers=["https://overpass-api.de/api/interpreter","https://overpass.private.coffee/api/interpreter","https://overpass.kumi.systems/api/interpreter","https://maps.mail.ru/osm/tools/overpass/api/interpreter"];
-  for(const url of servers){
-    const host=new URL(url).host;
-    setStatus(`Finding buildings and addresses inside the shape (${host})…`);
-    try{
-      const ctl=new AbortController(); const t=setTimeout(()=>ctl.abort(),25000);
-      const r = await fetch(url+"?data="+encodeURIComponent(q),{signal:ctl.signal});
-      clearTimeout(t);
-      if(!r.ok){ errs.push(host+": HTTP "+r.status); continue; }
-      data = await r.json(); break;
-    }catch(err){ errs.push(host+": "+(err.name==="AbortError"?"timed out":"blocked or offline")); }
-  }
-  if(!data){ setStatus("The building lookup didn't respond. "+errs.join(" · "),true); return; }
+  setStatus("Loading map data…");
+  try{ await loadLibs(); }catch(e){ setStatus("Couldn't load the map data tools. Check your connection and reload the page.",true); return; }
+  const lats=pts.map(p=>p[0]), lngs=pts.map(p=>p[1]);
+  const x0=tx(Math.min(...lngs)), x1=tx(Math.max(...lngs)), y0=ty(Math.max(...lats)), y1=ty(Math.min(...lats));
+  const tiles=[]; for(let x=x0;x<=x1;x++) for(let y=y0;y<=y1;y++) tiles.push([x,y]);
+  setStatus(`Finding buildings and addresses inside the shape (${tiles.length} map tile${tiles.length>1?"s":""})…`);
+  let bf=[], af=[];
+  try{
+    const res=await Promise.all(tiles.map(([x,y])=>Promise.all([readLayer(libs.bld,"building",x,y),readLayer(libs.adr,"address",x,y)])));
+    for(const [b,a] of res){ bf.push(...b); af.push(...a); }
+  }catch(e){ setStatus("The building and address data didn't load. Wait a few seconds and redraw the shape.",true); return; }
 
-  const bldgs=[], addrs=[];
-  for(const el of data.elements){
-    const t=el.tags||{};
-    if(el.type==="way"){
-      if(SKIP.has(t.building)) continue;
-      const c=[el.center.lat,el.center.lon];
-      if(!inside(c,pts)) continue;
-      bldgs.push({pt:c,num:t["addr:housenumber"]||null,street:t["addr:street"]||null,src:t["addr:housenumber"]?"map":null});
-    } else if(el.type==="node" && t["addr:street"]){
-      const c=[el.lat,el.lon];
-      if(inside(c,pts)) addrs.push({pt:c,num:t["addr:housenumber"],street:t["addr:street"]});
-    }
+  // buildings inside the shape, ignoring sheds and detached garages (< 45 m²)
+  const bmap=new Map();
+  for(const f of bf){
+    const g=f.geometry; if(!g) continue;
+    const ring = g.type==="Polygon"? g.coordinates[0] : g.type==="MultiPolygon"? g.coordinates[0][0] : null;
+    if(!ring) continue;
+    const c=ringCenter(ring), area=ringAreaM2(ring);
+    if(area<45 || !inside(c,pts)) continue;
+    const id=f.properties.id||c.join();
+    const prev=bmap.get(id); if(!prev||prev.area<area) bmap.set(id,{pt:c,area});
   }
-  // attach loose address points to the nearest unaddressed building within 30 m; otherwise keep them as their own house
+  const bldgs=[...bmap.values()];
+
+  // addresses inside the shape (one per number + street, units collapsed)
+  const amap=new Map();
+  for(const f of af){
+    const p=f.properties||{}; if(!p.number||!p.street) continue;
+    const c=[f.geometry.coordinates[1],f.geometry.coordinates[0]];
+    if(!inside(c,pts)) continue;
+    const street=titleCase(p.street), k=p.number+"|"+street;
+    if(!amap.has(k)) amap.set(k,{pt:c,num:String(p.number),street,src:"county"});
+  }
+  const addrs=[...amap.values()];
+
+  // a building with an address point within 35 m counts as addressed; the rest need a lookup
+  const used=new Set();
   for(const a of addrs){
-    let best=null,bd=30;
-    for(const b of bldgs){ if(b.num) continue; const d=meters(a.pt,b.pt); if(d<bd){bd=d;best=b;} }
-    if(best){ best.num=a.num; best.street=a.street; best.src="map"; }
-    else if(!bldgs.some(b=>b.num===a.num && b.street===a.street)) bldgs.push({pt:a.pt,num:a.num,street:a.street,src:"map"});
+    let best=-1,bd=35;
+    bldgs.forEach((b,i)=>{ const d=meters(a.pt,b.pt); if(d<bd){bd=d;best=i;} });
+    if(best>=0) used.add(best);
   }
-  houses = bldgs.map((b,i)=>({id:i,...b,on:true}));
+  const bare=bldgs.filter((b,i)=>!used.has(i)).map(b=>({pt:b.pt,num:null,street:null,src:null}));
+  houses=[...addrs,...bare].map((h,i)=>({id:i,...h,on:true}));
   drawHouses(); render();
-  const miss=houses.filter(h=>!h.num).length;
-  setStatus(`Found ${houses.length} buildings.` + (miss? ` ${miss} have no mapped address yet; use Geocodio below to fill them in.`:""));
-  if(miss && $("key").value.trim()) geocodeMissing();
+  const miss=bare.length;
+  setStatus(`Found ${addrs.length} addresses and ${bldgs.length} buildings.` + (miss? ` ${miss} building${miss>1?"s have":" has"} no address on file (often garages or new builds); tap to remove, or fill them with Geocodio below.`:""));
 }
 
 function drawHouses(){
