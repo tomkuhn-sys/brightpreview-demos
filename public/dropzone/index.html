@@ -311,7 +311,9 @@ async function loadHouses(pts){
     const c=[f.geometry.coordinates[1],f.geometry.coordinates[0]];
     if(!inside(c,pts)) continue;
     const street=titleCase(p.street), k=p.number+"|"+street;
-    if(!amap.has(k)) amap.set(k,{pt:c,num:String(p.number),street,src:"county"});
+    let lv=[]; try{ lv=JSON.parse(p.address_levels||"[]").map(o=>o.value); }catch(e){}
+    const state=(lv[0]||"").toUpperCase(), city=titleCase(lv[1]||"");
+    if(!amap.has(k)) amap.set(k,{pt:c,num:String(p.number),street,city,state,zip:p.postcode||"",src:"county"});
   }
   const addrs=[...amap.values()];
 
@@ -334,7 +336,7 @@ function drawHouses(){
   for(const h of houses){
     const color = !h.on ? css("--out") : (h.num ? css("--in") : css("--warn"));
     const m=L.circleMarker(h.pt,{radius:6,color:css("--panel"),weight:1.5,fillColor:color,fillOpacity:.95});
-    m.bindTooltip(h.num? `${h.num} ${h.street}`:"Address not found yet",{direction:"top"});
+    m.bindTooltip(h.num? esc(fullAddr(h)):"Address not found yet",{direction:"top"});
     m.on("click",()=>{ h.on=!h.on; drawHouses(); render(); });
     m.addTo(houseLayer);
   }
@@ -362,6 +364,7 @@ async function geocodeMissing(){
       if(!ac.number) return;
       const h=todo[i];
       h.num=ac.number; h.street=ac.formatted_street||[ac.predirectional,ac.street,ac.suffix,ac.postdirectional].filter(Boolean).join(" ");
+      h.city=ac.city||""; h.state=ac.state||""; h.zip=ac.zip||"";
       h.src = top.accuracy_type==="rooftop"||top.accuracy_type==="point" ? "geocodio" : "estimate";
       if(h.src==="estimate") rough++;
       filled++;
@@ -386,6 +389,7 @@ function groups(){
       odd:n.filter(x=>x%2).length,even:n.filter(x=>x%2===0).length};
   }).sort((a,b)=>a.street.localeCompare(b.street));
 }
+function fullAddr(h){ const tail=[h.city,[h.state,h.zip].filter(Boolean).join(" ")].filter(Boolean).join(", "); return `${h.num} ${h.street}`+(tail?", "+tail:""); }
 function esc(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 function render(){
   const g=groups(), on=houses.filter(h=>h.on);
@@ -411,9 +415,9 @@ $("list").addEventListener("click",e=>{
 
 // ---------- export ----------
 function rows(){
-  const out=[["street","house_number","side","lat","lng","source"]];
+  const out=[["full_address","house_number","street","city","state","zip","side","lat","lng","source"]];
   for(const x of groups()) for(const h of x.act){ const n=parseInt(h.num);
-    out.push([x.street,h.num,isNaN(n)?"":(n%2?"odd":"even"),h.pt[0].toFixed(6),h.pt[1].toFixed(6),h.src||""]); }
+    out.push([fullAddr(h),h.num,x.street,h.city||"",h.state||"",h.zip||"",isNaN(n)?"":(n%2?"odd":"even"),h.pt[0].toFixed(6),h.pt[1].toFixed(6),h.src||""]); }
   return out;
 }
 const toCsv = r => r.map(c=>c.map(v=>/[",\n]/.test(v)?'"'+String(v).replace(/"/g,'""')+'"':v).join(",")).join("\n");
