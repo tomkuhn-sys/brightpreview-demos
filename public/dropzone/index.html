@@ -53,6 +53,14 @@ details .row{margin-top:8px}
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border-bottom:1px solid var(--line)}
 .stat{background:var(--panel);padding:10px 12px}
 .stat b{display:block;font:700 22px/1 var(--display);font-variant-numeric:tabular-nums}
+.cov{padding:10px 16px 12px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
+.cov-h{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.cov-h small{font:500 10px var(--mono);text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
+.cov-h b{font:600 12px var(--mono);font-variant-numeric:tabular-nums}
+.cov-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--line)}
+.cov-bar i{display:block;height:100%}
+.cov-key{display:flex;flex-wrap:wrap;gap:4px 12px;font:400 12px var(--body);color:var(--muted);font-variant-numeric:tabular-nums}
+.cov-key span::before{content:"";display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:middle;background:var(--c)}
 .stat small{font:500 10px var(--mono);text-transform:uppercase;letter-spacing:.07em;color:var(--muted)}
 #list{overflow:auto;flex:1;padding:4px 0}
 .street{padding:10px 16px;border-bottom:1px solid var(--line)}
@@ -118,6 +126,11 @@ details .row{margin-top:8px}
       <div class="stat"><b id="sHouses">0</b><small>Houses</small></div>
       <div class="stat"><b id="sStreets">0</b><small>Streets</small></div>
       <div class="stat"><b id="sMissing">0</b><small>No address</small></div>
+    </div>
+    <div class="cov" id="cov" hidden>
+      <div class="cov-h"><small>Address quality</small><b id="covVerdict"></b></div>
+      <div class="cov-bar" id="covBar" role="img" aria-label="Address quality breakdown"></div>
+      <div class="cov-key" id="covKey"></div>
     </div>
     <div id="list"><div class="empty"><b>No area yet.</b> Draw a shape on the map and you'll get each street with its first and last house number inside the shape, odd and even sides, and a flyer count.</div></div>
     <div class="foot">
@@ -392,11 +405,29 @@ function groups(){
 function place(hs){ const h=hs.find(v=>v.city||v.zip)||{}; return [h.city,[h.state,h.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")||"City unknown"; }
 function fullAddr(h){ const tail=[h.city,[h.state,h.zip].filter(Boolean).join(" ")].filter(Boolean).join(", "); return `${h.num} ${h.street}`+(tail?", "+tail:""); }
 function esc(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function coverage(on){
+  const n=on.length, box=$("cov");
+  if(!n){ box.hidden=true; return; }
+  const cats=[
+    {k:"county",label:"Public records",c:"var(--in)"},
+    {k:"geocodio",label:"Rooftop lookup",c:"#2f7fb5"},
+    {k:"estimate",label:"Estimated",c:"var(--warn)"},
+    {k:"none",label:"No address",c:"var(--out)"}];
+  const count=k=>on.filter(h=> k==="none"? !h.num : k==="county"? (h.num && (h.src==="county"||h.src==="map")) : h.num && h.src===k).length;
+  cats.forEach(c=>{c.n=count(c.k); c.p=Math.round(c.n/n*100);});
+  const good=cats[0].n+cats[1].n, gp=Math.round(good/n*100);
+  $("covVerdict").textContent = gp>=90? `${gp}% exact · strong` : gp>=60? `${gp}% exact · usable` : `${gp}% exact · weak`;
+  $("covVerdict").style.color = gp>=90? "var(--in)" : gp>=60? "var(--warn)" : "var(--accent)";
+  $("covBar").innerHTML=cats.filter(c=>c.n).map(c=>`<i style="width:${c.n/n*100}%;background:${c.c}" title="${c.label}: ${c.n}"></i>`).join("");
+  $("covKey").innerHTML=cats.filter(c=>c.n).map(c=>`<span style="--c:${c.c}">${c.label} ${c.p}% (${c.n})</span>`).join("");
+  box.hidden=false;
+}
 function render(){
   const g=groups(), on=houses.filter(h=>h.on);
   $("sHouses").textContent=on.filter(h=>h.num).length;
   $("sStreets").textContent=g.filter(x=>x.act.length).length;
   $("sMissing").textContent=on.filter(h=>!h.num).length;
+  coverage(on);
   const has = g.some(x=>x.act.length);
   $("btnCopy").disabled=$("btnCsv").disabled=!has;
   if(!houses.length){ $("list").innerHTML=`<div class="empty"><b>No area yet.</b> Draw a shape on the map and you'll get each street with its first and last house number inside the shape, odd and even sides, and a flyer count.</div>`; return; }
