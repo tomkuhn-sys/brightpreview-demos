@@ -1,0 +1,747 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Roofline Measure</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Same family as Drop Zone: Bricolage for display, Plex for UI. The one loud thing is the lit roofline:
+   selected edges are drawn as glowing bulbs at true 12-inch spacing on the aerial photo. */
+:root{
+  --bg:#f6f7f4; --panel:#ffffff; --fg:#1d2420; --muted:#66706a; --line:#dde2dc;
+  --accent:#c2410c; --accent-ink:#ffffff; --warn:#b45309; --leaf:#15803d;
+  --bulb:#ffd166; --bulb-glow:rgba(255,190,60,.75); --wire:rgba(255,255,255,.75);
+  --display:"Bricolage Grotesque","Avenir Next",system-ui,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){ --bg:#121614; --panel:#1a1f1c; --fg:#e8ece9; --muted:#9aa49e; --line:#2c3430;
+    --accent:#f97316; --accent-ink:#1a0d04; --warn:#fbbf24; --leaf:#4ade80; color-scheme:dark; }
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 var(--body);display:flex;flex-direction:column;padding-top:env(safe-area-inset-top,0px)}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+header h1{font:700 18px/1.1 var(--display);margin:0;letter-spacing:-.01em}
+header h1 span{color:var(--accent)}
+.tag{font:500 11px var(--body);color:var(--muted);border:1px solid var(--line);border-radius:4px;padding:2px 6px}
+#search{display:flex;gap:6px;margin-left:auto;flex:1 1 280px;max-width:460px}
+input,select{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:7px 9px;min-width:0}
+input:focus-visible,select:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+#q{flex:1}
+button{font:600 13px var(--body);border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--fg);padding:7px 11px;cursor:pointer;white-space:nowrap}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.on{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,var(--panel))}
+main{flex:1;display:grid;grid-template-columns:1fr 400px;min-height:0}
+
+/* viewer */
+#viewer{position:relative;min-height:0;background:#0d0f0e;overflow:hidden}
+.vbar{position:absolute;top:10px;left:10px;right:10px;display:flex;gap:6px;flex-wrap:wrap;z-index:5;pointer-events:none}
+.vbar>*{pointer-events:auto}
+.seg{display:inline-flex;border:1px solid rgba(255,255,255,.18);border-radius:7px;overflow:hidden;background:rgba(20,22,21,.82);backdrop-filter:blur(6px)}
+.seg button{border:0;border-radius:0;background:transparent;color:#e8ece9;padding:7px 12px}
+.seg button.on{background:var(--bulb);color:#241a00}
+.vbar .spacer{flex:1}
+#stage{position:absolute;inset:0;touch-action:none;cursor:grab}
+#stage.tapmode{cursor:crosshair}
+#plate{position:absolute;left:0;top:0;transform-origin:0 0}
+#plate canvas{display:block;image-rendering:auto}
+#plate svg{position:absolute;inset:0;overflow:visible}
+#view3d{position:absolute;inset:0;display:none}
+#view3d.show{display:block}
+.vmsg{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:32px;text-align:center;color:#c9d1cc;font-size:15px;line-height:1.5}
+.vmsg[hidden],#stage[hidden]{display:none}
+.vmsg b{color:#fff;display:block;font:600 20px var(--display);margin-bottom:6px}
+.vmsg p{max-width:46ch;margin:0}
+.toast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);background:rgba(20,22,21,.92);color:#fff;padding:8px 14px;border-radius:8px;font-size:13px;z-index:6;max-width:calc(100% - 32px);text-align:center}
+.toast[hidden]{display:none}
+
+/* svg marks */
+.edge .hit{stroke:transparent;stroke-width:16px;vector-effect:non-scaling-stroke;fill:none;cursor:pointer;pointer-events:stroke}
+.edge .wire{stroke:var(--wire);stroke-width:1.6px;vector-effect:non-scaling-stroke;stroke-dasharray:5 4;fill:none;pointer-events:none}
+.edge .bulbs{stroke:var(--bulb);stroke-linecap:round;fill:none;pointer-events:none;display:none;filter:drop-shadow(0 0 3px var(--bulb-glow))}
+.edge.sel .bulbs{display:inline}
+.edge.sel .wire{stroke:rgba(255,209,102,.55);stroke-dasharray:none}
+.edge.hot .wire{stroke:#fff;stroke-width:3px;stroke-dasharray:none}
+.elabel{font-family:var(--body);font-weight:600;fill:#fff;paint-order:stroke;stroke:rgba(0,0,0,.75);stroke-width:3px;pointer-events:none}
+.plant .shape{fill:rgba(74,222,128,.14);stroke:#86efac;stroke-width:1.5px;vector-effect:non-scaling-stroke;cursor:pointer}
+.plant.on .shape{fill:rgba(255,209,102,.22);stroke:var(--bulb)}
+.plant.hot .shape{}
+.plant text{font-family:var(--body);font-weight:700;fill:#0d0f0e;pointer-events:none;text-anchor:middle;dominant-baseline:central}
+.plant circle{fill:#86efac;pointer-events:none}
+.plant.on circle{fill:var(--bulb)}
+.front-mark line{stroke:#fff;stroke-width:2px;vector-effect:non-scaling-stroke}
+.front-mark text{font-family:var(--body);font-weight:600;fill:#fff;paint-order:stroke;stroke:rgba(0,0,0,.7);}
+.meas line{stroke:#38bdf8;stroke-width:2.5px;vector-effect:non-scaling-stroke}
+.meas circle{fill:#38bdf8}
+.meas text{font-family:var(--body);font-weight:600;fill:#fff;paint-order:stroke;stroke:rgba(0,0,0,.8);}
+
+/* panel */
+aside{border-left:1px solid var(--line);background:var(--panel);display:flex;flex-direction:column;min-height:0;min-width:0;overflow:auto}
+section{padding:14px 16px;border-bottom:1px solid var(--line)}
+section h2{font:700 15px/1.2 var(--display);margin:0 0 8px;display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+section h2 small{font:500 13px var(--body);color:var(--muted)}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.hint{color:var(--muted);font-size:13px;margin:0}
+.status{font:500 12px var(--body);color:var(--muted);min-height:1.2em;margin-top:6px}
+.status.err{color:var(--warn)}
+details summary{cursor:pointer;font-weight:600}
+details[open] summary{margin-bottom:8px}
+#key{flex:1}
+.addr{font-weight:600}
+.meta{color:var(--muted);font-size:13px}
+.checks{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:13px}
+.checks label{display:flex;gap:5px;align-items:center;cursor:pointer}
+.big{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden;margin-top:10px}
+.big div{background:var(--panel);padding:8px 10px}
+.big b{display:block;font:700 22px/1.1 var(--display);font-variant-numeric:tabular-nums}
+.big span{font-size:12px;color:var(--muted)}
+.group{margin-top:10px}
+.group h3{font:600 13px var(--body);color:var(--muted);margin:0 0 2px;display:flex;justify-content:space-between}
+.erow{display:grid;grid-template-columns:20px 1fr auto auto;gap:8px;align-items:center;padding:5px 6px;border-radius:6px;cursor:pointer;font-variant-numeric:tabular-nums}
+.erow:hover,.erow.hot{background:color-mix(in srgb,var(--bulb) 22%,transparent)}
+.erow .t{font-weight:500}
+.erow .s{color:var(--muted);font-size:12px}
+.erow .l{font-weight:600;min-width:58px;text-align:right}
+input[type=checkbox]{accent-color:var(--accent);width:16px;height:16px;margin:0}
+.prow{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-top:8px}
+.prow.hot{border-color:var(--bulb)}
+.prow .top{display:flex;gap:8px;align-items:center}
+.prow .top .n{font:700 13px var(--display);width:22px;height:22px;border-radius:50%;background:#86efac;color:#0d0f0e;display:inline-flex;align-items:center;justify-content:center;flex:none}
+.prow.on .top .n{background:var(--bulb)}
+.prow .top .res{margin-left:auto;font-weight:600;font-variant-numeric:tabular-nums}
+.prow .fields{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:8px}
+.prow .fields label{display:flex;flex-direction:column;font-size:11px;color:var(--muted);gap:2px}
+.prow .fields input,.prow .fields select{padding:5px 6px;font-size:13px;width:100%}
+.prow .rm{border:0;background:none;color:var(--muted);padding:2px 4px;font-weight:500}
+.empty{color:var(--muted);font-size:13px;margin:8px 0 0}
+.totals{position:sticky;bottom:0;background:var(--panel);border-top:2px solid var(--fg);padding:12px 16px;margin-top:auto}
+.totals .sum{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.totals .sum b{font:700 26px/1 var(--display);font-variant-numeric:tabular-nums}
+.totals p{margin:4px 0 10px;color:var(--muted);font-size:13px}
+.measout{margin-top:8px;font-size:13px;font-variant-numeric:tabular-nums}
+.measout b{font-size:15px}
+@media (max-width:860px){
+  main{grid-template-columns:1fr;grid-template-rows:minmax(340px,58vh) auto}
+  aside{border-left:0;border-top:1px solid var(--line);overflow:visible}
+  #search{max-width:none}
+  .totals{position:static}
+}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Roofline <span>Measure</span></h1>
+  <span class="tag">BrightPreview demo</span>
+  <form id="search">
+    <input id="q" type="search" placeholder="House address" autocomplete="street-address">
+    <button class="primary" type="submit">Measure</button>
+  </form>
+</header>
+<main>
+  <div id="viewer">
+    <div class="vbar">
+      <div class="seg" role="tablist" aria-label="View">
+        <button id="tabTop" class="on" role="tab" aria-selected="true">Top view</button>
+        <button id="tab3d" role="tab" aria-selected="false">3D view</button>
+      </div>
+      <div class="seg"><button id="btnMeasure" title="Tap two points to measure between them">Measure</button></div>
+      <span class="spacer"></span>
+      <div class="seg" id="zoomBox"><button id="zIn" aria-label="Zoom in">+</button><button id="zOut" aria-label="Zoom out">−</button><button id="zFit">Fit</button></div>
+    </div>
+    <div id="stage"><div id="plate"><canvas id="cv"></canvas><svg id="ov" xmlns="http://www.w3.org/2000/svg"></svg></div></div>
+    <div id="view3d"></div>
+    <div class="vmsg" id="vmsg"><div><b>Look up a house to start</b><p>Enter an address above. You'll get the roof edges measured along their real slope, and the bushes and trees around the house, sized for wrapping.</p></div></div>
+    <div class="toast" id="toast" hidden></div>
+  </div>
+  <aside>
+    <section>
+      <details id="keyBox">
+        <summary>Google API key</summary>
+        <p class="hint">Needs Solar API and Map Tiles API turned on in the Holiday Mockups dev project, and this site allowed under the key's website restrictions. Geocoding API is used for addresses if it's on. The key stays in this browser.</p>
+        <div class="row" style="margin-top:8px">
+          <input id="key" type="password" placeholder="Paste key" autocomplete="off">
+          <button id="btnKey">Save</button>
+        </div>
+      </details>
+      <div class="status" id="status" role="status"></div>
+    </section>
+
+    <section id="houseSec" hidden>
+      <div class="addr" id="addr"></div>
+      <div class="meta" id="meta"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="btnFront">Set the street side</button>
+        <button id="btnMove">Wrong house?</button>
+      </div>
+      <p class="hint" id="frontNote" style="margin-top:6px"></p>
+    </section>
+
+    <section id="roofSec" hidden>
+      <h2>Roofline <small id="roofSub"></small></h2>
+      <div class="seg" style="border-color:var(--line);background:var(--bg)" id="presets">
+        <button data-p="front" style="color:var(--fg)">Front</button>
+        <button data-p="frontSides" style="color:var(--fg)">Front + sides</button>
+        <button data-p="all" style="color:var(--fg)">All</button>
+        <button data-p="none" style="color:var(--fg)">Clear</button>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" id="incRakes" checked> Angled edges (rakes)</label>
+        <label><input type="checkbox" id="incRidges"> Ridges</label>
+        <label><input type="checkbox" id="incHips"> Hips &amp; valleys</label>
+      </div>
+      <div class="big">
+        <div><b id="tRoof">0</b><span>feet selected</span></div>
+        <div><b id="tBulbs">0</b><span>bulbs at 12″</span></div>
+        <div><b id="tEdges">0</b><span>edges</span></div>
+      </div>
+      <div id="edgeList"></div>
+    </section>
+
+    <section id="plantSec" hidden>
+      <h2>Bushes &amp; trees <small id="plantSub"></small></h2>
+      <div class="row">
+        <label class="meta">Wrap every <input id="spacing" type="number" min="1" max="24" step="0.5" value="4" style="width:58px"> in</label>
+        <div class="seg" style="border-color:var(--line);background:var(--bg);margin-left:auto" id="sizeMode">
+          <button data-m="width" style="color:var(--fg)">Width</button>
+          <button data-m="circ" style="color:var(--fg)">Around</button>
+        </div>
+      </div>
+      <div id="plantList"></div>
+      <div class="row" style="margin-top:8px"><button id="btnAddPlant">Add a plant by hand</button></div>
+    </section>
+
+    <div class="totals" id="totals" hidden>
+      <div class="sum"><span>Total lights</span><b id="tAll">0 ft</b></div>
+      <p id="tSplit"></p>
+      <div class="row"><button id="btnCopy">Copy summary</button><button id="btnCsv">Download CSV</button></div>
+    </div>
+  </aside>
+</main>
+
+<script type="module">
+import * as R from "/roofline/roofcalc.js";
+
+const $ = id => document.getElementById(id);
+const store = {
+  get(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } },
+  set(k,v){ try{ localStorage.setItem(k,v); }catch(e){} }
+};
+const FT = R.M2FT;
+const fmt = (ft, d=1) => (Math.round(ft*10**d)/10**d).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
+const TYPE = R.EDGE_TYPES;
+const SIDES = [["front","Front"],["left","Left side"],["right","Right side"],["back","Back"]];
+function setStatus(t, err){ const s=$("status"); s.textContent=t||""; s.classList.toggle("err",!!err); }
+let toastT; function toast(t, ms=3500){ const el=$("toast"); el.textContent=t; el.hidden=!t; clearTimeout(toastT); if(t&&ms) toastT=setTimeout(()=>el.hidden=true, ms); }
+
+// ---------------------------------------------------------------- state
+const S = {
+  key: store.get("rl-google-key") || "",
+  preset: "frontSides", inc: { rakes:true, ridges:false, hips:false },
+  spacingIn: +(store.get("rl-spacing")||4), sizeMode: store.get("rl-size")||"width",
+  mode: null, meas: [], view: "top",
+};
+$("key").value = S.key; if(!S.key) $("keyBox").open = true;
+$("spacing").value = S.spacingIn;
+$("btnKey").onclick = () => { S.key=$("key").value.trim(); store.set("rl-google-key",S.key); setStatus(S.key?"Key saved in this browser.":"Key cleared."); if(S.key) $("keyBox").open=false; };
+
+// ---------------------------------------------------------------- Google calls
+async function gget(url, what){
+  let r;
+  try{ r = await fetch(url); }catch(e){ throw new Error(`Couldn't reach Google for ${what}. Check your connection.`); }
+  if(r.ok) return r;
+  let msg=""; try{ msg=(await r.json())?.error?.message||""; }catch(e){}
+  if(r.status===403) throw new Error(`Google refused the ${what} request. Turn on the API for this key and allow this website in the key's restrictions. ${msg}`);
+  if(r.status===404) throw new Error(`Google has no ${what} data for this spot. Tap the roof itself with "Wrong house?", or try another address.`);
+  if(r.status===400 && /API key/i.test(msg)) throw new Error("Google says the API key isn't valid. Paste it again under Google API key.");
+  throw new Error(`Google ${what} returned an error (${r.status}). ${msg}`);
+}
+
+async function geocode(q){
+  if(S.key){
+    try{
+      const r = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(q)}&key=${encodeURIComponent(S.key)}`);
+      const j = await r.json();
+      if(j.status==="OK" && j.results.length){
+        const g=j.results[0], route=(g.address_components||[]).find(c=>c.types.includes("route"));
+        return { lat:g.geometry.location.lat, lng:g.geometry.location.lng, label:g.formatted_address, street:route?.long_name||"" };
+      }
+    }catch(e){ /* fall back below */ }
+  }
+  const r = await fetch("https://photon.komoot.io/api/?limit=1&lang=en&q="+encodeURIComponent(q));
+  const j = await r.json(); const f=j.features?.[0];
+  if(!f) throw new Error("Couldn't find that address. Add the city or ZIP and try again.");
+  const p=f.properties;
+  return { lat:f.geometry.coordinates[1], lng:f.geometry.coordinates[0], label:[p.housenumber&&p.street?`${p.housenumber} ${p.street}`:p.name,p.city,p.state].filter(Boolean).join(", "), street:p.street||"" };
+}
+
+let GT = null;
+async function readTiff(url){
+  GT = GT || await import("https://cdn.jsdelivr.net/npm/geotiff@2.1.3/+esm");
+  const r = await gget(url + (url.includes("?")?"&":"?") + "key=" + encodeURIComponent(S.key), "imagery");
+  const tiff = await GT.fromArrayBuffer(await r.arrayBuffer());
+  const img = await tiff.getImage();
+  const bands = await img.readRasters();
+  const [ox, oy] = img.getOrigin(), [rx] = img.getResolution();
+  const epsg = img.getGeoKeys().ProjectedCSTypeGeoKey;
+  return { w: img.getWidth(), h: img.getHeight(), px: Math.abs(rx), x0: ox, y0: oy, bands: Array.from(bands), data: bands[0], epsg };
+}
+
+async function nearbyRoads(lat, lng, zone){
+  const q = `[out:json][timeout:12];way(around:80,${lat},${lng})["highway"]["highway"!~"footway|path|cycleway|steps|pedestrian|track|corridor|proposed|construction|bridleway"];out geom;`;
+  const ctl = new AbortController(); const t=setTimeout(()=>ctl.abort(), 9000);
+  try{
+    const r = await fetch("https://overpass-api.de/api/interpreter",{method:"POST",body:"data="+encodeURIComponent(q),headers:{"Content-Type":"application/x-www-form-urlencoded"},signal:ctl.signal});
+    const j = await r.json();
+    return (j.elements||[]).filter(e=>e.geometry).map(e=>({ name:e.tags?.name||"", service:e.tags?.highway==="service", pts:e.geometry.map(g=>R.toUTM(g.lat,g.lon,zone)) }));
+  }catch(e){ return []; } finally{ clearTimeout(t); }
+}
+
+// ---------------------------------------------------------------- pipeline
+$("search").onsubmit = async ev => {
+  ev.preventDefault();
+  const q=$("q").value.trim(); if(!q) return;
+  if(!S.key){ $("keyBox").open=true; setStatus("Paste a Google API key first.",true); $("key").focus(); return; }
+  store.set("rl-last", q);
+  try{
+    setStatus("Finding the address…");
+    const g = await geocode(q);
+    S.addrLabel=g.label; S.street=g.street;
+    await loadHouse(g.lat, g.lng);
+  }catch(e){ setStatus(e.message,true); }
+};
+
+async function loadHouse(lat, lng){
+  setStatus("Finding the building and its roof planes…");
+  const bi = await (await gget(`https://solar.googleapis.com/v1/buildingInsights:findClosest?location.latitude=${lat}&location.longitude=${lng}&requiredQuality=LOW&key=${encodeURIComponent(S.key)}`,"Solar building")).json();
+  const rss = bi.solarPotential?.roofSegmentStats || [];
+  if(!rss.length) throw new Error("Google found the building but no roof planes for it. Try another house.");
+  const c = bi.center, bb = bi.boundingBox;
+  const z0 = R.utmZone(c.longitude), a = R.toUTM(bb.sw.latitude,bb.sw.longitude,z0), b = R.toUTM(bb.ne.latitude,bb.ne.longitude,z0);
+  const radius = Math.min(60, Math.max(25, Math.hypot(b.e-a.e,b.n-a.n)/2 + 15));
+
+  setStatus("Downloading the aerial photo and height map…");
+  const dl = await (await gget(`https://solar.googleapis.com/v1/dataLayers:get?location.latitude=${c.latitude}&location.longitude=${c.longitude}&radiusMeters=${radius.toFixed(1)}&view=IMAGERY_LAYERS&requiredQuality=LOW&pixelSizeMeters=0.1&key=${encodeURIComponent(S.key)}`,"Solar imagery")).json();
+  const [dsmT, rgbT, maskT] = await Promise.all([readTiff(dl.dsmUrl), readTiff(dl.rgbUrl), readTiff(dl.maskUrl)]);
+  if(!(dsmT.epsg>32600 && dsmT.epsg<32800)) throw new Error("The height map came back in an unexpected map projection, so this demo can't measure it.");
+  const zone = dsmT.epsg % 100, north = dsmT.epsg < 32700;
+
+  setStatus("Measuring roof edges…");
+  await new Promise(r=>setTimeout(r,20));
+  const dsm = { w:dsmT.w, h:dsmT.h, px:dsmT.px, x0:dsmT.x0, y0:dsmT.y0, data:dsmT.data };
+  for(let i=0;i<dsm.data.length;i++) if(dsm.data[i]<-1000) dsm.data[i]=NaN;
+  const rgb = [0,1,2].map(k=>R.resampleTo(dsm, rgbT, k));
+  const roof = R.resampleTo(dsm, maskT, 0);
+  const conv = R.convergence(c.latitude, c.longitude, zone);
+  const segs = rss.map(s=>{
+    const ctr=R.toUTM(s.center.latitude,s.center.longitude,zone);
+    const corners=[[s.boundingBox.sw.latitude,s.boundingBox.sw.longitude],[s.boundingBox.ne.latitude,s.boundingBox.ne.longitude],[s.boundingBox.sw.latitude,s.boundingBox.ne.longitude],[s.boundingBox.ne.latitude,s.boundingBox.sw.longitude]].map(([la,lo])=>R.toUTM(la,lo,zone));
+    return { ce:ctr.e, cn:ctr.n, h0:s.planeHeightAtCenterMeters, pitch:s.pitchDegrees||0, az:((s.azimuthDegrees||0)-conv+360)%360,
+      bbox:{ e0:Math.min(...corners.map(p=>p.e)), e1:Math.max(...corners.map(p=>p.e)), n0:Math.min(...corners.map(p=>p.n)), n1:Math.max(...corners.map(p=>p.n)) },
+      area:s.stats?.areaMeters2||1 };
+  });
+  R.alignPlanes(dsm, segs);
+  const lab = R.labelFacets(dsm, roof, segs);
+  const { facets, edges } = R.buildEdges(dsm, lab, segs);
+  const center = R.toUTM(c.latitude, c.longitude, zone);
+
+  setStatus("Looking for bushes and trees…");
+  await new Promise(r=>setTimeout(r,20));
+  const plants = R.detectPlants(dsm, rgb, roof, { center, maxDist: radius });
+
+  Object.assign(S, { bi, zone, north, conv, dsm, rgb, roof, segs, lab, facets, edges, center, radius,
+    imagery:{ date:dl.imageryDate||bi.imageryDate, quality:dl.imageryQuality||bi.imageryQuality }, meas:[] });
+  S.plants = plants.map((p,i)=>({ id:i+1, e:p.e, n:p.n, outline:p.outline,
+    type:p.type, shape:p.shape, on:p.type!=="tree",
+    hFt:round05(p.height*FT), wFt:round05(p.width*FT), lFt:round05(p.length*FT) }));
+  S.nextPlant = S.plants.length+1;
+
+  setStatus("Finding which side faces the street…");
+  const roads = await nearbyRoads(c.latitude, c.longitude, zone);
+  const fr = R.frontFromRoads(center, roads, S.street);
+  S.front = fr ? fr.front : { e:0, n:-1 };
+  S.frontNote = fr ? (fr.road ? `Front faces ${fr.road}${fr.matched?"":" (nearest street)"}.` : "Front faces the nearest street.") : "Couldn't find the street, so the front is set to face south. Use Set the street side to fix it.";
+  R.assignSides(edges, center, S.front);
+  R.presetSelect(edges, S.preset, S.inc);
+
+  setStatus("");
+  if(S.v3) S.v3.dirty = true;
+  drawPhoto(); renderAll(); fit();
+  $("vmsg").hidden = true;
+}
+const round05 = v => Math.round(v*2)/2;
+
+// ---------------------------------------------------------------- top view drawing
+const cv=$("cv"), ov=$("ov"), plate=$("plate"), stage=$("stage");
+const NS="http://www.w3.org/2000/svg";
+const T = { s:1, x:0, y:0 };
+function drawPhoto(){
+  const { w, h } = S.dsm; cv.width=w; cv.height=h;
+  const ctx=cv.getContext("2d"), img=ctx.createImageData(w,h);
+  for(let i=0;i<w*h;i++){ img.data[i*4]=S.rgb[0][i]; img.data[i*4+1]=S.rgb[1][i]; img.data[i*4+2]=S.rgb[2][i]; img.data[i*4+3]=255; }
+  ctx.putImageData(img,0,0);
+  ov.setAttribute("width",w); ov.setAttribute("height",h); ov.setAttribute("viewBox",`0 0 ${w} ${h}`);
+}
+const P = (e,n) => R.utm2px(S.dsm, e, n);
+function el(tag, attrs, parent){ const x=document.createElementNS(NS,tag); for(const k in attrs) x.setAttribute(k,attrs[k]); if(parent) parent.appendChild(x); return x; }
+
+function renderSvg(){
+  ov.innerHTML="";
+  if(!S.dsm) return;
+  const bulbPx = 0.3048/S.dsm.px; // 12 in on the ground, in image pixels
+  const gE = el("g",{},ov);
+  for(const ed of S.edges){
+    const a=P(ed.a.e,ed.a.n), b=P(ed.b.e,ed.b.n);
+    const g=el("g",{class:"edge"+(ed.selected?" sel":""),"data-e":ed.id},gE);
+    el("line",{class:"wire",x1:a.col,y1:a.row,x2:b.col,y2:b.row},g);
+    // horizontal spacing of 12 in along the slope -> closer together on the photo for steep edges
+    const step = bulbPx * ed.horiz/ed.len;
+    el("line",{class:"bulbs",x1:a.col,y1:a.row,x2:b.col,y2:b.row,"stroke-width":Math.max(2.2,bulbPx*0.42),"stroke-dasharray":`0 ${step.toFixed(2)}`},g);
+    el("line",{class:"hit",x1:a.col,y1:a.row,x2:b.col,y2:b.row},g);
+    ed.svg=g;
+  }
+  const gL = el("g",{},ov), fs = 14/T.s;
+  for(const ed of S.edges){ if(!ed.selected) continue;
+    const m=P(ed.mid.e+ed.normal.e*0.9, ed.mid.n+ed.normal.n*0.9);
+    const t=el("text",{class:"elabel",x:m.col,y:m.row,style:`font-size:${fs}px;stroke-width:${3/T.s}px`,"text-anchor":"middle","dominant-baseline":"central"},gL);
+    t.textContent=fmt(ed.len*FT,0)+"′";
+  }
+  const gP = el("g",{},ov);
+  for(const p of S.plants){ if(!p.outline) continue;
+    const g=el("g",{class:"plant"+(p.on?" on":""),"data-p":p.id},gP);
+    el("polygon",{class:"shape",points:p.outline.map(q=>{const r=P(q.e,q.n);return r.col+","+r.row;}).join(" ")},g);
+    const c=P(p.e,p.n), r=10/T.s;
+    el("circle",{cx:c.col,cy:c.row,r},g);
+    const t=el("text",{x:c.col,y:c.row,style:`font-size:${12/T.s}px`},g); t.textContent=p.id;
+    p.svg=g;
+  }
+  // street-side marker
+  const c0=P(S.center.e,S.center.n), f=P(S.center.e+S.front.e*14,S.center.n+S.front.n*14);
+  const gF=el("g",{class:"front-mark"},ov);
+  el("line",{x1:c0.col+(f.col-c0.col)*0.55,y1:c0.row+(f.row-c0.row)*0.55,x2:f.col,y2:f.row,"marker-end":"url(#arr)"},gF);
+  const defs=el("defs",{},ov), mk=el("marker",{id:"arr",viewBox:"0 0 10 10",refX:"8",refY:"5",markerWidth:"7",markerHeight:"7",orient:"auto-start-reverse"},defs);
+  el("path",{d:"M0 0L10 5L0 10z",fill:"#fff"},mk);
+  const ft=el("text",{x:f.col,y:f.row,style:`font-size:${13/T.s}px;stroke-width:${3/T.s}px`,dx:6/T.s,dy:-6/T.s},gF); ft.textContent="Street";
+  // measurement
+  if(S.meas.length && S.view==="top"){
+    const g=el("g",{class:"meas"},ov), pts=S.meas.map(m=>P(m.e,m.n));
+    if(pts.length===2) el("line",{x1:pts[0].col,y1:pts[0].row,x2:pts[1].col,y2:pts[1].row},g);
+    for(const q of pts) el("circle",{cx:q.col,cy:q.row,r:5/T.s},g);
+    if(S.measOut){ const t=el("text",{x:(pts[0].col+pts[1].col)/2,y:(pts[0].row+pts[1].row)/2,style:`font-size:${14/T.s}px;stroke-width:${3/T.s}px`,dy:-10/T.s,"text-anchor":"middle"},g); t.textContent=fmt(S.measOut.len*FT)+" ft"; }
+  }
+}
+
+// pan / zoom
+function applyT(){ plate.style.transform=`translate(${T.x}px,${T.y}px) scale(${T.s})`; }
+function fit(){
+  if(!S.dsm) return;
+  const r=stage.getBoundingClientRect(), {w,h}=S.dsm, pad=60;
+  // fit the house plus a margin, not the whole download
+  let e0=Infinity,e1=-Infinity,n0=Infinity,n1=-Infinity;
+  for(const s of S.segs){ e0=Math.min(e0,s.bbox.e0); e1=Math.max(e1,s.bbox.e1); n0=Math.min(n0,s.bbox.n0); n1=Math.max(n1,s.bbox.n1); }
+  const m=6, A=P(e0-m,n1+m), B=P(e1+m,n0-m);
+  const bw=Math.max(40,B.col-A.col), bh=Math.max(40,B.row-A.row);
+  T.s=Math.min((r.width-pad)/bw,(r.height-pad-40)/bh);
+  T.x=r.width/2-(A.col+bw/2)*T.s; T.y=(r.height+40)/2-(A.row+bh/2)*T.s;
+  applyT(); renderSvg();
+}
+function zoomAt(f, cx, cy){ const ns=Math.min(12,Math.max(0.15,T.s*f)); T.x=cx-(cx-T.x)*ns/T.s; T.y=cy-(cy-T.y)*ns/T.s; T.s=ns; applyT(); renderSvgSoon(); }
+let rs; function renderSvgSoon(){ cancelAnimationFrame(rs); rs=requestAnimationFrame(renderSvg); }
+stage.addEventListener("wheel",e=>{ e.preventDefault(); const r=stage.getBoundingClientRect(); zoomAt(Math.exp(-e.deltaY*0.0015), e.clientX-r.left, e.clientY-r.top); },{passive:false});
+$("zIn").onclick=()=>{ const r=stage.getBoundingClientRect(); zoomAt(1.4,r.width/2,r.height/2); };
+$("zOut").onclick=()=>{ const r=stage.getBoundingClientRect(); zoomAt(1/1.4,r.width/2,r.height/2); };
+$("zFit").onclick=fit;
+const ptrs=new Map(); let drag=null, pinch=null;
+stage.addEventListener("pointerdown",e=>{ stage.setPointerCapture(e.pointerId); ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(ptrs.size===1) drag={x:e.clientX,y:e.clientY,tx:T.x,ty:T.y,moved:false,target:e.target};
+  if(ptrs.size===2){ const [a,b]=[...ptrs.values()]; pinch={d:Math.hypot(a.x-b.x,a.y-b.y),s:T.s}; drag=null; } });
+stage.addEventListener("pointermove",e=>{ if(!ptrs.has(e.pointerId)) return; ptrs.set(e.pointerId,{x:e.clientX,y:e.clientY});
+  if(pinch && ptrs.size===2){ const [a,b]=[...ptrs.values()], r=stage.getBoundingClientRect(); zoomAt(pinch.s*Math.hypot(a.x-b.x,a.y-b.y)/pinch.d/T.s,(a.x+b.x)/2-r.left,(a.y+b.y)/2-r.top); return; }
+  if(drag){ const dx=e.clientX-drag.x, dy=e.clientY-drag.y; if(Math.hypot(dx,dy)>5) drag.moved=true; if(drag.moved){ T.x=drag.tx+dx; T.y=drag.ty+dy; applyT(); } } });
+stage.addEventListener("pointerup",e=>{ ptrs.delete(e.pointerId); if(ptrs.size<2) pinch=null;
+  if(drag && !drag.moved) tapTop(e, drag.target); drag=null; });
+stage.addEventListener("pointercancel",e=>{ ptrs.delete(e.pointerId); drag=null; pinch=null; });
+stage.addEventListener("pointerover",e=>{ const id=hitId(e.target); hot(id); });
+stage.addEventListener("pointerout",()=>hot(null));
+new ResizeObserver(()=>{ if(S.dsm && S.view==="top") fit(); }).observe(stage);
+
+function hitId(t){ const g=t?.closest?.("[data-e],[data-p]"); if(!g) return null; return g.dataset.e!=null?"e"+g.dataset.e:"p"+g.dataset.p; }
+function screenToUTM(e){ const r=stage.getBoundingClientRect(); const col=(e.clientX-r.left-T.x)/T.s, row=(e.clientY-r.top-T.y)/T.s; return { e:S.dsm.x0+col*S.dsm.px, n:S.dsm.y0-row*S.dsm.px }; }
+
+function tapTop(e, target){
+  if(!S.dsm) return;
+  const u=screenToUTM(e);
+  if(S.mode==="front"){
+    const v={e:u.e-S.center.e,n:u.n-S.center.n}, L=Math.hypot(v.e,v.n); if(L<1) return;
+    S.front={e:v.e/L,n:v.n/L}; S.frontNote="Street side set by hand."; setMode(null);
+    R.assignSides(S.edges,S.center,S.front); if(S.preset) R.presetSelect(S.edges,S.preset,S.inc); renderAll(); return;
+  }
+  if(S.mode==="move"){
+    setMode(null); const ll=R.fromUTM(u.e,u.n,S.zone,S.north);
+    loadHouse(ll.lat,ll.lng).catch(err=>setStatus(err.message,true)); return;
+  }
+  if(S.mode==="measure"){ addMeasurePoint({ e:u.e, n:u.n, z:dsmZ(u.e,u.n) }); return; }
+  const id=hitId(target); if(id) toggle(id);
+}
+function dsmZ(e,n){ const v=[]; for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){ const i=R.cellAt(S.dsm,e+dx*S.dsm.px,n+dy*S.dsm.px); if(i>=0&&!Number.isNaN(S.dsm.data[i])) v.push(S.dsm.data[i]); } v.sort((a,b)=>a-b); return v[v.length>>1]??0; }
+
+// ---------------------------------------------------------------- selection
+function toggle(id){
+  if(id[0]==="e"){ const ed=S.edges[+id.slice(1)]; ed.selected=!ed.selected; S.preset=null; }
+  else { const p=S.plants.find(p=>p.id===+id.slice(1)); if(p) p.on=!p.on; }
+  renderAll();
+}
+function hot(id){
+  document.querySelectorAll(".hot").forEach(x=>x.classList.remove("hot"));
+  if(!id) return;
+  document.querySelectorAll(`[data-hot="${id}"]`).forEach(x=>x.classList.add("hot"));
+  const g = id[0]==="e" ? S.edges[+id.slice(1)]?.svg : S.plants.find(p=>p.id===+id.slice(1))?.svg;
+  g?.classList.add("hot");
+}
+$("presets").onclick=e=>{ const p=e.target.dataset.p; if(!p||!S.edges) return; S.preset=p; R.presetSelect(S.edges,p,S.inc); renderAll(); };
+for(const [id,k] of [["incRakes","rakes"],["incRidges","ridges"],["incHips","hips"]]){
+  $(id).onchange=()=>{ S.inc[k]=$(id).checked; if(!S.edges) return; if(!S.preset) S.preset="frontSides"; R.presetSelect(S.edges,S.preset,S.inc); renderAll(); };
+}
+
+// ---------------------------------------------------------------- side panel
+function renderAll(){
+  if(!S.edges) return;
+  $("houseSec").hidden=$("roofSec").hidden=$("plantSec").hidden=$("totals").hidden=false;
+  $("addr").textContent=S.addrLabel||"Selected house";
+  const d=S.imagery.date; const months=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  $("meta").textContent=`Aerial photo from ${d?months[(d.month||1)-1]+" "+d.year:"an unknown date"}, ${String(S.imagery.quality||"").toLowerCase()||"unknown"} detail. ${S.segs.length} roof planes found.`;
+  $("frontNote").textContent=S.frontNote||"";
+  document.querySelectorAll("#presets button").forEach(b=>b.classList.toggle("on",b.dataset.p===S.preset));
+  document.querySelectorAll("#sizeMode button").forEach(b=>b.classList.toggle("on",b.dataset.m===S.sizeMode));
+
+  // edges
+  const sel=S.edges.filter(e=>e.selected), roofFt=sel.reduce((a,e)=>a+e.len*FT,0);
+  $("tRoof").textContent=fmt(roofFt,0); $("tBulbs").textContent=Math.ceil(roofFt).toLocaleString(); $("tEdges").textContent=sel.length;
+  $("roofSub").textContent=`${S.edges.length} edges found`;
+  const list=$("edgeList"); list.innerHTML="";
+  for(const [side,label] of SIDES){
+    const eds=S.edges.filter(e=>e.side===side).sort((a,b)=>order(a)-order(b)||b.len-a.len); if(!eds.length) continue;
+    const sum=eds.filter(e=>e.selected).reduce((a,e)=>a+e.len*FT,0);
+    const g=document.createElement("div"); g.className="group";
+    g.innerHTML=`<h3><span>${label}</span><span>${fmt(sum,0)} ft</span></h3>`;
+    for(const ed of eds){
+      const row=document.createElement("label"); row.className="erow"; row.dataset.hot="e"+ed.id;
+      const slope = ed.type==="eave"||ed.type==="ridge"||ed.type==="top"||ed.type==="step" ? "level" : `${Math.round(ed.slope)}° slope`;
+      row.innerHTML=`<input type="checkbox" ${ed.selected?"checked":""}><span><span class="t">${TYPE[ed.type]}</span> <span class="s">${slope}</span></span><span class="s">${ed.pitch>2?fmt(R.toPitch12(ed.pitch),0)+"/12":"flat"}</span><span class="l">${fmt(ed.len*FT)} ft</span>`;
+      row.querySelector("input").onchange=()=>toggle("e"+ed.id);
+      row.onmouseenter=()=>hot("e"+ed.id); row.onmouseleave=()=>hot(null);
+      g.appendChild(row);
+    }
+    list.appendChild(g);
+  }
+
+  // plants
+  const pl=$("plantList"); pl.innerHTML="";
+  const circ=S.sizeMode==="circ";
+  let plantFt=0;
+  if(!S.plants.length) pl.innerHTML=`<p class="empty">No bushes or trees stood out near this house. Add one by hand if there's one to wrap.</p>`;
+  for(const p of S.plants){
+    const res=R.wrapLength({ shape:p.shape, height:p.hFt, width:p.wFt, length:p.lFt, spacingIn:S.spacingIn });
+    if(p.on) plantFt+=res.feet;
+    const box=p.shape==="box";
+    const row=document.createElement("div"); row.className="prow"+(p.on?" on":""); row.dataset.hot="p"+p.id;
+    row.innerHTML=`<div class="top"><input type="checkbox" ${p.on?"checked":""} aria-label="Include plant ${p.id}"><span class="n">${p.id}</span>
+      <select data-f="type" aria-label="Kind">${opt(["bush","Bush"],["hedge","Hedge"],["tree","Tree"])}</select>
+      <span class="res">${fmt(res.feet,0)} ft</span>${p.outline?"":`<button class="rm" title="Remove">Remove</button>`}</div>
+      <div class="fields">
+        <label>Shape<select data-f="shape">${opt(["round","Round"],["cone","Cone"],["column","Column"],["box","Box"])}</select></label>
+        <label>Height ft<input data-f="hFt" type="number" min="0" step="0.5" value="${p.hFt}"></label>
+        <label>${box?"Depth":circ?"Around":"Width"} ft<input data-f="wFt" type="number" min="0" step="0.5" value="${box||!circ?p.wFt:round05(p.wFt*Math.PI)}"></label>
+        ${box?`<label>Length ft<input data-f="lFt" type="number" min="0" step="0.5" value="${p.lFt}"></label>`:`<label>Rings<input value="${res.rings}" disabled></label>`}
+      </div>`;
+    row.querySelector('[data-f="type"]').value=p.type; row.querySelector('[data-f="shape"]').value=p.shape;
+    row.querySelector('input[type=checkbox]').onchange=()=>toggle("p"+p.id);
+    row.querySelectorAll("[data-f]").forEach(inp=>inp.onchange=()=>{
+      const f=inp.dataset.f;
+      if(f==="type"){ p.type=inp.value; if(inp.value==="hedge") p.shape="box"; else if(inp.value==="tree"&&p.shape==="round") p.shape="cone"; }
+      else if(f==="shape") p.shape=inp.value;
+      else { let v=Math.max(0,+inp.value||0); if(f==="wFt"&&circ&&p.shape!=="box") v=v/Math.PI; p[f]=v; }
+      renderAll();
+    });
+    row.querySelector(".rm")?.addEventListener("click",()=>{ S.plants=S.plants.filter(x=>x!==p); renderAll(); });
+    row.onmouseenter=()=>hot("p"+p.id); row.onmouseleave=()=>hot(null);
+    pl.appendChild(row);
+  }
+  const nOn=S.plants.filter(p=>p.on).length;
+  $("plantSub").textContent=`${S.plants.length} found, ${nOn} wrapped`;
+  $("tAll").textContent=fmt(roofFt+plantFt,0)+" ft";
+  $("tSplit").textContent=`${fmt(roofFt,0)} ft on the roofline + ${fmt(plantFt,0)} ft on ${nOn} plant${nOn===1?"":"s"}. Estimates from aerial data; check on site before ordering.`;
+  S.totals={roofFt,plantFt};
+  renderSvg(); update3d();
+}
+const order = e => ({eave:0,rake:1,ridge:2,hip:3,valley:4,top:5,step:6})[e.type];
+const opt = (...o) => o.map(([v,l])=>`<option value="${v}">${l}</option>`).join("");
+
+$("spacing").onchange=()=>{ S.spacingIn=Math.max(1,+$("spacing").value||4); store.set("rl-spacing",S.spacingIn); renderAll(); };
+$("sizeMode").onclick=e=>{ const m=e.target.dataset.m; if(!m) return; S.sizeMode=m; store.set("rl-size",m); renderAll(); };
+$("btnAddPlant").onclick=()=>{ if(!S.plants) return; S.plants.push({ id:S.nextPlant++, type:"bush", shape:"round", on:true, hFt:4, wFt:5, lFt:5 }); renderAll(); };
+
+// ---------------------------------------------------------------- modes
+function setMode(m){
+  S.mode = S.mode===m ? null : m;
+  $("btnFront").classList.toggle("on",S.mode==="front"); $("btnMove").classList.toggle("on",S.mode==="move"); $("btnMeasure").classList.toggle("on",S.mode==="measure");
+  stage.classList.toggle("tapmode",!!S.mode);
+  if(S.mode==="front"){ if(S.view!=="top") showTop(); toast("Tap the street in front of the house.",0); }
+  else if(S.mode==="move"){ if(S.view!=="top") showTop(); toast("Tap the roof of the house you meant.",0); }
+  else if(S.mode==="measure"){ S.meas=[]; S.measOut=null; toast(S.view==="top"?"Tap two points. Heights come from the roof height map.":"Tap two points on the 3D model.",0); }
+  else toast("");
+  renderSvg(); update3d();
+}
+$("btnFront").onclick=()=>setMode("front");
+$("btnMove").onclick=()=>setMode("move");
+$("btnMeasure").onclick=()=>{ if(!S.dsm) return; setMode("measure"); };
+
+function addMeasurePoint(p){
+  if(S.meas.length===2){ S.meas=[]; S.measOut=null; }
+  S.meas.push(p);
+  if(S.meas.length===2){
+    const [a,b]=S.meas, horiz=Math.hypot(b.e-a.e,b.n-a.n), rise=Math.abs(b.z-a.z);
+    S.measOut={ len:Math.hypot(horiz,rise), horiz, rise, ang:Math.atan2(rise,horiz)*180/Math.PI };
+    toast(`${fmt(S.measOut.len*FT)} ft along the line · ${fmt(horiz*FT)} ft across · ${fmt(rise*FT)} ft up · ${Math.round(S.measOut.ang)}°`,0);
+  } else toast("Now tap the second point.",0);
+  renderSvg(); update3d();
+}
+
+// ---------------------------------------------------------------- 3D view (Google Photorealistic 3D Tiles in CesiumJS)
+const CESIUM = "https://cdn.jsdelivr.net/npm/cesium@1.146/Build/Cesium/";
+function loadCesium(){
+  if(window.Cesium) return Promise.resolve();
+  window.CESIUM_BASE_URL = CESIUM;
+  const css=document.createElement("link"); css.rel="stylesheet"; css.href=CESIUM+"Widgets/widgets.css"; document.head.appendChild(css);
+  return new Promise((ok,bad)=>{ const s=document.createElement("script"); s.src=CESIUM+"Cesium.js"; s.onload=ok; s.onerror=()=>bad(new Error("The 3D viewer didn't load. Check your connection and try again.")); document.head.appendChild(s); });
+}
+function showTop(){ S.view="top"; $("view3d").classList.remove("show"); stage.hidden=false; $("zoomBox").hidden=false;
+  $("tabTop").classList.add("on"); $("tab3d").classList.remove("on"); $("tabTop").setAttribute("aria-selected","true"); $("tab3d").setAttribute("aria-selected","false");
+  if(S.mode==="measure") setMode("measure"); fit(); }
+async function show3d(){
+  if(!S.dsm){ toast("Look up a house first."); return; }
+  if(S.mode && S.mode!=="measure") setMode(null);
+  if(S.mode==="measure") setMode("measure");
+  S.view="3d"; $("view3d").classList.add("show"); stage.hidden=true; $("zoomBox").hidden=true;
+  $("tab3d").classList.add("on"); $("tabTop").classList.remove("on"); $("tab3d").setAttribute("aria-selected","true"); $("tabTop").setAttribute("aria-selected","false");
+  try{ await init3d(); }catch(e){ toast(e.message,0); console.error(e); }
+}
+$("tabTop").onclick=showTop; $("tab3d").onclick=show3d;
+
+async function init3d(){
+  if(!S.v3){
+    toast("Loading 3D…",0);
+    await loadCesium();
+    const C=window.Cesium;
+    const viewer=new C.Viewer($("view3d"),{ baseLayer:false, baseLayerPicker:false, geocoder:false, homeButton:false, sceneModePicker:false,
+      navigationHelpButton:false, animation:false, timeline:false, fullscreenButton:false, infoBox:false, selectionIndicator:false, globe:false, requestRenderMode:true });
+    viewer.scene.skyAtmosphere.show=true;
+    let tileset;
+    try{ tileset=await C.createGooglePhotorealistic3DTileset({ key:S.key, onlyUsingWithGoogleGeocoder:true }); }
+    catch(e){ throw new Error("Google's 3D tiles didn't load. Turn on Map Tiles API for this key and allow this website."); }
+    viewer.scene.primitives.add(tileset);
+    S.v3={ C, viewer, tileset, ents:new Map(), dirty:true };
+    new C.ScreenSpaceEventHandler(viewer.scene.canvas).setInputAction(click=>{
+      if(S.mode==="measure"){
+        const pos=viewer.scene.pickPosition(click.position); if(!C.defined(pos)) return;
+        const cg=C.Cartographic.fromCartesian(pos), u=R.toUTM(C.Math.toDegrees(cg.latitude),C.Math.toDegrees(cg.longitude),S.zone);
+        addMeasurePoint({ e:u.e, n:u.n, z:cg.height-(S.v3.off||0), pos });
+        return;
+      }
+      const p=viewer.scene.pick(click.position);
+      if(C.defined(p) && p.id && p.id._bp) toggle(p.id._bp);
+    }, C.ScreenSpaceEventType.LEFT_CLICK);
+  }
+  if(S.v3.dirty) await place3d();
+  toast("");
+}
+
+async function place3d(){
+  const { C, viewer } = S.v3;
+  S.v3.dirty=false;
+  viewer.entities.removeAll(); S.v3.ents.clear();
+  const ll=(e,n)=>R.fromUTM(e,n,S.zone,S.north);
+  // Line Solar heights up with the 3D tiles by sampling the tiles at each roof plane's center.
+  toast("Lining up the roof with the 3D model…",0);
+  const cartos=S.segs.map(s=>{ const p=ll(s.ce,s.cn); return C.Cartographic.fromDegrees(p.lng,p.lat); });
+  let off=null;
+  try{
+    const res=await viewer.scene.sampleHeightMostDetailed(cartos);
+    const d=res.map((c,i)=>c&&Number.isFinite(c.height)?c.height-S.segs[i].h0:null).filter(v=>v!==null).sort((a,b)=>a-b);
+    if(d.length) off=d[d.length>>1];
+  }catch(e){ console.warn(e); }
+  S.v3.off = off ?? 0;
+  if(off===null) toast("Couldn't line up heights with the 3D model, so the lines may float. Lengths are unaffected.",6000);
+  const pos=(e,n,z)=>{ const p=ll(e,n); return C.Cartesian3.fromDegrees(p.lng,p.lat,z+S.v3.off+0.12); };
+  for(const ed of S.edges){
+    const ent=viewer.entities.add({ polyline:{ positions:[pos(ed.a.e,ed.a.n,ed.a.z),pos(ed.b.e,ed.b.n,ed.b.z)], width:4, material:C.Color.WHITE, depthFailMaterial:C.Color.WHITE.withAlpha(.3) } });
+    ent._bp="e"+ed.id; S.v3.ents.set(ent._bp,ent);
+  }
+  for(const p of S.plants){ if(!p.outline) continue;
+    const top=dsmZ(p.e,p.n), hM=p.hFt/FT, rM=p.wFt/FT/2;
+    const ent=viewer.entities.add({ position:pos(p.e,p.n,top-hM/2-0.12), ellipsoid:{ radii:new C.Cartesian3(rM,rM,hM/2), material:C.Color.LIME.withAlpha(.25), outline:true, outlineColor:C.Color.LIME } });
+    ent._bp="p"+p.id; S.v3.ents.set(ent._bp,ent);
+  }
+  // camera: stand in the street looking at the front of the house
+  const c=ll(S.center.e,S.center.n), z=Math.max(...S.segs.map(s=>s.h0));
+  const bearing=(Math.atan2(-S.front.e,-S.front.n)*180/Math.PI + S.conv + 360)%360;
+  viewer.camera.lookAt(C.Cartesian3.fromDegrees(c.lng,c.lat,z+S.v3.off-2), new C.HeadingPitchRange(C.Math.toRadians(bearing),C.Math.toRadians(-28),48));
+  update3d();
+  toast("Drag to orbit, scroll to zoom. Tap an edge or plant to add or remove it.",5000);
+}
+
+function update3d(){
+  if(!S.v3 || S.v3.dirty) return;
+  const { C, viewer, ents } = S.v3;
+  const gold=C.Color.fromCssColorString("#ffd166");
+  for(const ed of S.edges||[]){ const ent=ents.get("e"+ed.id); if(!ent) continue;
+    ent.polyline.material=ed.selected?gold:C.Color.WHITE.withAlpha(.7); ent.polyline.width=ed.selected?7:3;
+    ent.polyline.depthFailMaterial=(ed.selected?gold:C.Color.WHITE).withAlpha(.35); }
+  for(const p of S.plants||[]){ const ent=ents.get("p"+p.id); if(!ent) continue;
+    const col=p.on?gold:C.Color.LIME; ent.ellipsoid.material=col.withAlpha(.25); ent.ellipsoid.outlineColor=col; }
+  // measurement line
+  const old=ents.get("meas"); if(old){ viewer.entities.remove(old); ents.delete("meas"); }
+  if(S.view==="3d" && S.meas.length && S.meas[0].pos){
+    const ps=S.meas.map(m=>m.pos).filter(Boolean);
+    const ent=viewer.entities.add({ polyline:ps.length===2?{ positions:ps, width:3, material:C.Color.DEEPSKYBLUE, depthFailMaterial:C.Color.DEEPSKYBLUE.withAlpha(.4) }:undefined,
+      position:ps.length===2?C.Cartesian3.midpoint(ps[0],ps[1],new C.Cartesian3()):ps[0],
+      point:{ pixelSize:9, color:C.Color.DEEPSKYBLUE, disableDepthTestDistance:Number.POSITIVE_INFINITY },
+      label:S.measOut?{ text:fmt(S.measOut.len*FT)+" ft", font:"600 14px IBM Plex Sans, sans-serif", showBackground:true, pixelOffset:new C.Cartesian2(0,-18), disableDepthTestDistance:Number.POSITIVE_INFINITY }:undefined });
+    ents.set("meas",ent);
+  }
+  viewer.scene.requestRender();
+}
+
+// ---------------------------------------------------------------- export
+function summaryRows(){
+  const rows=[["Kind","Where","Type","Feet of lights","Slope (deg)","Included"]];
+  for(const ed of S.edges) rows.push(["Roof edge",ed.side,TYPE[ed.type],fmt(ed.len*FT),Math.round(ed.slope),ed.selected?"yes":"no"]);
+  for(const p of S.plants){ const r=R.wrapLength({shape:p.shape,height:p.hFt,width:p.wFt,length:p.lFt,spacingIn:S.spacingIn});
+    rows.push([`Plant ${p.id}`,`${p.shape}, ${p.hFt} ft tall, ${p.wFt} ft wide${p.shape==="box"?`, ${p.lFt} ft long`:""}`,p.type,fmt(r.feet),"",p.on?"yes":"no"]); }
+  return rows;
+}
+$("btnCsv").onclick=()=>{ if(!S.edges) return;
+  const csv=summaryRows().map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download=(S.addrLabel||"house").replace(/[^\w]+/g,"-").slice(0,60)+"-lights.csv"; a.click(); };
+$("btnCopy").onclick=async()=>{ if(!S.edges) return;
+  const lines=[S.addrLabel||"House", `Roofline: ${fmt(S.totals.roofFt,0)} ft`];
+  for(const [side,label] of SIDES){ const eds=S.edges.filter(e=>e.selected&&e.side===side); if(eds.length) lines.push(`  ${label}: `+eds.map(e=>`${TYPE[e.type].toLowerCase()} ${fmt(e.len*FT)} ft`).join(", ")); }
+  const on=S.plants.filter(p=>p.on);
+  lines.push(`Plants: ${fmt(S.totals.plantFt,0)} ft at ${S.spacingIn} in spacing`);
+  for(const p of on) lines.push(`  #${p.id} ${p.type}: ${p.hFt} ft tall, ${p.wFt} ft wide → ${fmt(R.wrapLength({shape:p.shape,height:p.hFt,width:p.wFt,length:p.lFt,spacingIn:S.spacingIn}).feet,0)} ft`);
+  lines.push(`Total: ${fmt(S.totals.roofFt+S.totals.plantFt,0)} ft`);
+  try{ await navigator.clipboard.writeText(lines.join("\n")); toast("Summary copied."); }catch(e){ toast("Couldn't copy here. Use Download CSV instead."); } };
+
+// deep link: ?a=address
+const qa=new URLSearchParams(location.search).get("a");
+$("q").value = qa || store.get("rl-last") || "";
+if(qa && S.key) $("search").requestSubmit();
+</script>
+</body>
+</html>
