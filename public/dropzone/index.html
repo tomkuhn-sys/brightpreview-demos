@@ -389,6 +389,7 @@ function groups(){
       odd:n.filter(x=>x%2).length,even:n.filter(x=>x%2===0).length};
   }).sort((a,b)=>a.street.localeCompare(b.street));
 }
+function place(hs){ const h=hs.find(v=>v.city||v.zip)||{}; return [h.city,[h.state,h.zip].filter(Boolean).join(" ")].filter(Boolean).join(", ")||"City unknown"; }
 function fullAddr(h){ const tail=[h.city,[h.state,h.zip].filter(Boolean).join(" ")].filter(Boolean).join(", "); return `${h.num} ${h.street}`+(tail?", "+tail:""); }
 function esc(s){ return String(s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 function render(){
@@ -403,7 +404,7 @@ function render(){
   $("list").innerHTML=g.map(x=>`
     <div class="street">
       <h3><span>${esc(x.street)}</span><span class="range">${x.lo===null?"none":x.lo===x.hi?x.lo:x.lo+"–"+x.hi}</span></h3>
-      <p>${x.act.length} house${x.act.length===1?"":"s"} · ${x.odd} odd side · ${x.even} even side</p>
+      <p>${esc(place(x.all))} · ${x.act.length} house${x.act.length===1?"":"s"} · ${x.odd} odd · ${x.even} even</p>
       <div class="nums">${x.all.map(h=>`<button class="num${h.on?"":" x"}" data-id="${h.id}" title="${h.on?"Remove":"Restore"} ${esc(h.num)} ${esc(h.street)}">${esc(h.num)}</button>`).join("")}</div>
     </div>`).join("");
 }
