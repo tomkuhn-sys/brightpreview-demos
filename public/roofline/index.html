@@ -247,7 +247,16 @@ const S = {
   spacingIn: +(store.get("rl-spacing")||4), sizeMode: store.get("rl-size")||"width",
   mode: null, meas: [], view: "top",
 };
-$("key").value = S.key; if(!S.key) $("keyBox").open = true;
+$("key").value = S.key;
+// No key pasted? Use the project's own browser key, which Firebase Hosting publishes at /__/firebase/init.json.
+const keyReady = (async()=>{
+  if(S.key) return;
+  try{
+    const r = await fetch("/__/firebase/init.json");
+    if(r.ok){ const k=(await r.json()).apiKey; if(k){ S.key=k; S.autoKey=true; setStatus("Using the Holiday Mockups dev project's key."); return; } }
+  }catch(e){}
+  $("keyBox").open = true;
+})();
 $("spacing").value = S.spacingIn;
 $("btnKey").onclick = () => { S.key=$("key").value.trim(); store.set("rl-google-key",S.key); setStatus(S.key?"Key saved in this browser.":"Key cleared."); if(S.key) $("keyBox").open=false; };
 
@@ -257,7 +266,7 @@ async function gget(url, what){
   try{ r = await fetch(url); }catch(e){ throw new Error(`Couldn't reach Google for ${what}. Check your connection.`); }
   if(r.ok) return r;
   let msg=""; try{ msg=(await r.json())?.error?.message||""; }catch(e){}
-  if(r.status===403) throw new Error(`Google refused the ${what} request. Turn on the API for this key and allow this website in the key's restrictions. ${msg}`);
+  if(r.status===403) throw new Error(S.autoKey ? `Google refused the ${what} request. In Google Cloud (holiday-mockups-dev), open Credentials, edit "Browser key (auto created by Firebase)" and add Solar API and Map Tiles API to its allowed APIs. ${msg}` : `Google refused the ${what} request. Turn on the API for this key and allow this website in the key's restrictions. ${msg}`);
   if(r.status===404) throw new Error(`Google has no ${what} data for this spot. Tap the roof itself with "Wrong house?", or try another address.`);
   if(r.status===400 && /API key/i.test(msg)) throw new Error("Google says the API key isn't valid. Paste it again under Google API key.");
   throw new Error(`Google ${what} returned an error (${r.status}). ${msg}`);
@@ -307,6 +316,7 @@ async function nearbyRoads(lat, lng, zone){
 $("search").onsubmit = async ev => {
   ev.preventDefault();
   const q=$("q").value.trim(); if(!q) return;
+  await keyReady;
   if(!S.key){ $("keyBox").open=true; setStatus("Paste a Google API key first.",true); $("key").focus(); return; }
   store.set("rl-last", q);
   try{
@@ -741,7 +751,7 @@ $("btnCopy").onclick=async()=>{ if(!S.edges) return;
 // deep link: ?a=address
 const qa=new URLSearchParams(location.search).get("a");
 $("q").value = qa || store.get("rl-last") || "";
-if(qa && S.key) $("search").requestSubmit();
+keyReady.then(()=>{ if(qa && S.key) $("search").requestSubmit(); });
 </script>
 </body>
 </html>
